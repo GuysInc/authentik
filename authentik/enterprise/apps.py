@@ -48,8 +48,8 @@ class AuthentikEnterpriseConfig(EnterpriseConfig):
             return
         self.logger.warning(
             "Enterprise development license override is enabled. Enterprise features are "
-            "unlocked for development and testing only - this instance must not be used in "
-            "production. Disable with AUTHENTIK_ENTERPRISE__DEV_LICENSE_OVERRIDE=false.",
+            "unlocked for development and testing. "
+            "Disable with AUTHENTIK_ENTERPRISE__DEV_LICENSE_OVERRIDE=false.",
         )
 
     @property
