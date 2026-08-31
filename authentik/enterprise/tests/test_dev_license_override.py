@@ -12,7 +12,7 @@ from authentik.enterprise.license import (
     LicenseKey,
     dev_license_override_enabled,
 )
-from authentik.enterprise.models import LicenseUsageStatus
+from authentik.enterprise.models import LicenseUsage, LicenseUsageStatus
 from authentik.lib.config import CONFIG
 
 OVERRIDE_KEY = "enterprise.dev_license_override"
@@ -66,3 +66,28 @@ class TestDevLicenseOverride(TestCase):
         create_test_admin_user()
         self.assertGreater(User.objects.all().count(), 0)
         self.assertEqual(LicenseKey.get_total().status(), LicenseUsageStatus.VALID)
+
+    def test_summary_never_cached(self):
+        """An overridden summary is never persisted to the shared cache
+
+        Regression test: /enterprise/license/summary/?cached=false calls summary()
+        directly, which would otherwise leave a synthetic "valid" entry in the cache
+        that outlives the override being turned off.
+        """
+        with CONFIG.patch(OVERRIDE_KEY, True):
+            LicenseKey.get_total().summary()
+            self.assertIsNone(cache.get(CACHE_KEY_ENTERPRISE_LICENSE))
+        with CONFIG.patch(OVERRIDE_KEY, False):
+            self.assertFalse(LicenseKey.cached_summary().status.is_valid)
+
+    def test_no_usage_records_written(self):
+        """The override must not write synthetic license usage history
+
+        Usage records feed _last_valid_date(), which the grace-period thresholds are
+        measured from, so fake "valid" rows would mask a real over-seat condition
+        after an actual license is installed.
+        """
+        LicenseUsage.objects.all().delete()
+        with CONFIG.patch(OVERRIDE_KEY, True):
+            self.assertIsNone(LicenseKey.get_total().record_usage())
+        self.assertEqual(LicenseUsage.objects.count(), 0)

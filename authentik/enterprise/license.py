@@ -243,6 +243,12 @@ class LicenseKey:
 
     def record_usage(self):
         """Capture the current validity status and metrics and save them"""
+        if dev_license_override_enabled():
+            # Usage records are compliance telemetry for a real license. Recording a
+            # synthetic "valid" history would poison _last_valid_date(), which the
+            # grace-period thresholds are measured from, and would keep masking a
+            # genuine over-seat condition for weeks after a real license is installed.
+            return None
         threshold = now() - timedelta(hours=8)
         usage = (
             LicenseUsage.objects.order_by("-record_date").filter(record_date__gte=threshold).first()
@@ -255,16 +261,6 @@ class LicenseKey:
             )
         return usage
 
-    def dev_override_summary(self) -> LicenseSummary:
-        """Summary for the development license override, built without touching the cache"""
-        return LicenseSummary(
-            latest_valid=datetime.fromtimestamp(self.exp, UTC),
-            internal_users=self.internal_users,
-            external_users=self.external_users,
-            status=LicenseUsageStatus.VALID,
-            license_flags=self.license_flags,
-        )
-
     def summary(self) -> LicenseSummary:
         """Summary of license status"""
         status = self.status()
@@ -276,20 +272,22 @@ class LicenseKey:
             status=status,
             license_flags=self.license_flags,
         )
-        cache.set(
-            CACHE_KEY_ENTERPRISE_LICENSE,
-            asdict(summary),
-            timeout=CACHE_EXPIRY_ENTERPRISE_LICENSE,
-        )
+        if not dev_license_override_enabled():
+            cache.set(
+                CACHE_KEY_ENTERPRISE_LICENSE,
+                asdict(summary),
+                timeout=CACHE_EXPIRY_ENTERPRISE_LICENSE,
+            )
         return summary
 
     @staticmethod
     def cached_summary() -> LicenseSummary:
         """Helper method which looks up the last summary"""
         if dev_license_override_enabled():
-            # Deliberately neither read nor write the cache, so that turning the
-            # override back off takes effect immediately.
-            return LicenseKey.dev_override().dev_override_summary()
+            # Deliberately bypass the cache in both directions: summary() will not
+            # persist an overridden summary, so turning the override back off takes
+            # effect immediately instead of lingering for the cache lifetime.
+            return LicenseKey.dev_override().summary()
         summary = cache.get(CACHE_KEY_ENTERPRISE_LICENSE)
         if not summary:
             return LicenseKey.get_total().summary()
