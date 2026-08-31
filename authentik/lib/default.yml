@@ -71,6 +71,15 @@ cache:
 debug: false
 debugger: false
 
+enterprise:
+  # Treat this installation as having a valid, unlimited enterprise license, so that
+  # enterprise features can be developed and tested against without a subscription.
+  # The authentik Enterprise Edition license permits copying and modifying the software
+  # for development and testing purposes without a subscription; it does NOT permit
+  # production use. Never enable this on a production instance.
+  # Env: AUTHENTIK_ENTERPRISE__DEV_LICENSE_OVERRIDE
+  dev_license_override: false
+
 log_level: info
 log:
   http_headers:

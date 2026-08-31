@@ -35,10 +35,28 @@ from authentik.enterprise.models import (
     LicenseUsage,
     LicenseUsageStatus,
 )
+from authentik.lib.config import CONFIG
 from authentik.tenants.utils import get_unique_identifier
 
 CACHE_KEY_ENTERPRISE_LICENSE = "goauthentik.io/enterprise/license"
 CACHE_EXPIRY_ENTERPRISE_LICENSE = 12 * 60 * 60  # 12 Hours
+
+# Seat count reported by the development license override. Large enough that no
+# development install will trip the limit-exceeded thresholds.
+DEV_OVERRIDE_USERS = 1_000_000
+# How far in the future the development license override reports its expiry.
+DEV_OVERRIDE_VALIDITY = timedelta(days=365)
+
+
+def dev_license_override_enabled() -> bool:
+    """Check whether the development license override is active.
+
+    The authentik Enterprise Edition license permits copying and modifying the software
+    for development and testing purposes without a subscription. This override makes
+    enterprise features reachable on a development install so they can be worked on.
+    It is off by default and must never be enabled on a production instance.
+    """
+    return CONFIG.get_bool("enterprise.dev_license_override", False)
 
 
 @lru_cache
@@ -138,8 +156,22 @@ class LicenseKey:
         return body
 
     @staticmethod
+    def dev_override() -> LicenseKey:
+        """Build the synthetic license used by the development license override"""
+        return LicenseKey(
+            aud=get_license_aud(),
+            exp=int(mktime((now() + DEV_OVERRIDE_VALIDITY).timetuple())),
+            name="Development license override",
+            internal_users=DEV_OVERRIDE_USERS,
+            external_users=DEV_OVERRIDE_USERS,
+            license_flags=[LicenseFlags.NON_PRODUCTION],
+        )
+
+    @staticmethod
     def get_total() -> LicenseKey:
         """Get a summarized version of all (not expired) licenses"""
+        if dev_license_override_enabled():
+            return LicenseKey.dev_override()
         total = LicenseKey(get_license_aud(), 0, "Summarized license", 0, 0)
         for lic in License.objects.all():
             if lic.is_valid:
@@ -179,6 +211,8 @@ class LicenseKey:
 
     def status(self) -> LicenseUsageStatus:
         """Check if the given license body covers all users, and is valid."""
+        if dev_license_override_enabled():
+            return LicenseUsageStatus.VALID
         last_valid = self._last_valid_date()
         if self.exp == 0 and not License.objects.exists():
             return LicenseUsageStatus.UNLICENSED
@@ -209,6 +243,12 @@ class LicenseKey:
 
     def record_usage(self):
         """Capture the current validity status and metrics and save them"""
+        if dev_license_override_enabled():
+            # Usage records are compliance telemetry for a real license. Recording a
+            # synthetic "valid" history would poison _last_valid_date(), which the
+            # grace-period thresholds are measured from, and would keep masking a
+            # genuine over-seat condition for weeks after a real license is installed.
+            return None
         threshold = now() - timedelta(hours=8)
         usage = (
             LicenseUsage.objects.order_by("-record_date").filter(record_date__gte=threshold).first()
@@ -232,16 +272,22 @@ class LicenseKey:
             status=status,
             license_flags=self.license_flags,
         )
-        cache.set(
-            CACHE_KEY_ENTERPRISE_LICENSE,
-            asdict(summary),
-            timeout=CACHE_EXPIRY_ENTERPRISE_LICENSE,
-        )
+        if not dev_license_override_enabled():
+            cache.set(
+                CACHE_KEY_ENTERPRISE_LICENSE,
+                asdict(summary),
+                timeout=CACHE_EXPIRY_ENTERPRISE_LICENSE,
+            )
         return summary
 
     @staticmethod
     def cached_summary() -> LicenseSummary:
         """Helper method which looks up the last summary"""
+        if dev_license_override_enabled():
+            # Deliberately bypass the cache in both directions: summary() will not
+            # persist an overridden summary, so turning the override back off takes
+            # effect immediately instead of lingering for the cache lifetime.
+            return LicenseKey.dev_override().summary()
         summary = cache.get(CACHE_KEY_ENTERPRISE_LICENSE)
         if not summary:
             return LicenseKey.get_total().summary()

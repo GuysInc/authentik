@@ -39,6 +39,19 @@ class AuthentikEnterpriseConfig(EnterpriseConfig):
 
         return LicenseKey.cached_summary().status.is_valid
 
+    @ManagedAppConfig.reconcile_global
+    def warn_dev_license_override(self):
+        """Make it obvious in the logs when the development license override is on"""
+        from authentik.enterprise.license import dev_license_override_enabled
+
+        if not dev_license_override_enabled():
+            return
+        self.logger.warning(
+            "Enterprise development license override is enabled. Enterprise features are "
+            "unlocked for development and testing only - this instance must not be used in "
+            "production. Disable with AUTHENTIK_ENTERPRISE__DEV_LICENSE_OVERRIDE=false.",
+        )
+
     @property
     def tenant_schedule_specs(self) -> list[ScheduleSpec]:
         from authentik.enterprise.tasks import enterprise_update_usage
